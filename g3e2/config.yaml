@@ -1,0 +1,87 @@
+# G3E-2 training configuration.
+#
+# LoRA vs QLoRA is chosen at runtime, not fixed here:
+#   python g3e2/train.py --method lora
+#   python g3e2/train.py --method qlora
+# `training.method` below is only the DEFAULT used when --method isn't
+# passed on the CLI. See README.md "Choosing LoRA vs QLoRA" for the
+# tradeoffs — short version: use lora if it fits in your GPU memory
+# (simpler, slightly faster), use qlora if you're hitting OOM (4-bit base
+# model, ~1/3 the memory, requires `pip install bitsandbytes`).
+
+model:
+  base_model: "Qwen/Qwen2.5-VL-3B-Instruct"
+  torch_dtype: "bfloat16"   # used when method=lora; ignored when method=qlora (see training.qlora below)
+
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  bias: "none"
+  task_type: "CAUSAL_LM"
+  # Do NOT blindly assume "merger" or other vision-projector module names
+  # are valid — inspect the actual installed Qwen2.5-VL module names
+  # first (train.py prints them before attaching LoRA) and only target
+  # modules that exist in that model version. This starting list is the
+  # language-model attention/MLP projections only.
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+
+data:
+  train_jsonl: "./data/g3e2/train.jsonl"
+  val_jsonl: "./data/g3e2/val.jsonl"
+  test_jsonl: "./data/g3e2/test.jsonl"
+  max_image_side: 640   # resize cap fed to the processor; matches g3e-data-engine's normalize.target_size
+
+training:
+  method: "lora"        # "lora" or "qlora" — default; override with --method on the CLI
+  trainer: "manual"     # "manual", "hf_trainer", or "trl_sft" — default; override with --trainer on the CLI
+  output_dir: "./checkpoints/g3e2"
+  num_train_epochs: 3
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 8
+  learning_rate: 0.0002
+  warmup_ratio: 0.03
+  logging_steps: 10
+  save_steps: 200
+  eval_steps: 200
+  bf16: true
+
+  # Only read when method=qlora. bitsandbytes is NOT a default dependency
+  # (see requirements.txt) — install it yourself before using --method qlora.
+  qlora:
+    load_in_4bit: true
+    bnb_4bit_quant_type: "nf4"
+    bnb_4bit_compute_dtype: "bfloat16"
+    bnb_4bit_use_double_quant: true
+
+  # Section 18's staged validation — train.py refuses to start
+  # `full_training` until every earlier stage has passed in the same run.
+  stages:
+    - dataset_validation
+    - sample_load_test
+    - batch_forward_test
+    - batch_backward_test
+    - lora_param_check
+    - tiny_overfit_test
+    - short_training_run
+    - full_training
+
+  tiny_overfit_test:
+    num_samples: 8
+    num_steps: 50
+    loss_should_drop_below: 0.5
+
+  short_training_run:
+    num_train_samples: 100
+    num_val_samples: 20
+
+versioning:
+  model_name: "g3e-2"
+  version: "v1.0.0"
